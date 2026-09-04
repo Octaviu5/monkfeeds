@@ -1,0 +1,866 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ channel_name }} - Focus Feeder</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='assets/style.css') }}">
+    <script src="https://www.youtube.com/iframe_api"></script>
+</head>
+<body>
+    <div class="container">
+        <a href="{{ url_for('index') }}" class="back-link">&larr; Back to Main Feed</a>
+        <div class="channel-header">
+            <h1>{{ channel_name }}</h1>
+            <span class="channel-id-display">ID: {{ channel_id }}</span>
+
+            <div id="backfill-hud" data-channelid="{{ channel_id }}">
+                {% if current_backfill.status in ['running', 'cancelling'] %}
+                    <span class="backfill-status-note" id="backfill-status-text">
+                        Syncing '{{ current_backfill.channel_name }}': {{ current_backfill.current }}/{{ current_backfill.total }}
+                        {% if current_backfill.status == 'cancelling' %}(cancelling&hellip;){% endif %}
+                    </span>
+                    <button id="cancelBackfillBtn" class="btn-action btn-unsub" {% if current_backfill.status == 'cancelling' %}disabled{% endif %}>
+                        Cancel sync
+                    </button>
+                {% elif backfill_status == 'done' %}
+                    <button id="backfillBtn" class="btn-action btn-backfill" data-channelid="{{ channel_id }}">
+                        &#8635; Re-run full back catalog fetch
+                    </button>
+                    <span class="backfill-status-note">Back catalog already fetched.</span>
+                {% elif backfill_status == 'cancelled' %}
+                    <button id="backfillBtn" class="btn-action btn-backfill" data-channelid="{{ channel_id }}">
+                        Resume / retry full back catalog fetch
+                    </button>
+                    <span class="backfill-status-note">Previous sync was cancelled.</span>
+                {% elif backfill_status == 'failed' %}
+                    <button id="backfillBtn" class="btn-action btn-backfill" data-channelid="{{ channel_id }}">
+                        Retry full back catalog fetch
+                    </button>
+                    <span class="backfill-status-note">Previous attempt failed.</span>
+                {% else %}
+                    <button id="backfillBtn" class="btn-action btn-backfill" data-channelid="{{ channel_id }}">
+                        Fetch full back catalog
+                    </button>
+                {% endif %}
+            </div>
+        </div>
+
+        <div id="rssContent">
+            {% if videos %}
+                {% for video in videos %}
+                    <div class="article-item {% if video.is_hidden %}is-obscured{% endif %}" id="video-item-{{ video.video_id }}" data-local="{{ video.is_downloaded }}">
+                        <div class="thumbnail-container" data-videoid="{{ video.video_id }}">
+                            <img src="{{ video.thumbnail_url }}" alt="Thumbnail for '{{ video.title }}'" loading="lazy" onerror="this.onerror=null;this.src='{{ url_for('static', filename='assets/no-thumbnail.png') }}';">
+                            <div class="play-icon"></div>
+                            {% if video.is_pinned %}<span class="pin-flair" title="Pinned">📌</span>{% endif %}
+                        </div>
+                        <div class="article-content">
+                            <h3><a href="#" class="video-title-link" data-videoid="{{ video.video_id }}">{{ video.title }}</a></h3>
+                            <p class="published-date">Published: {{ video.published_at_formatted }}{% if video.is_cooling_down %} <span class="cooldown-flair" title="In cooldown until {{ video.cooldown_until_formatted }}">❄️</span>{% endif %}</p>
+                        </div>
+                        <div class="action-btns">
+                            <button class="btn-action btn-fav {% if video.is_favorite %}is-active{% endif %}" data-videoid="{{ video.video_id }}" title="Favorite">
+                                {{ "UNFAV" if video.is_favorite else "FAV" }}
+                            </button>
+                            <button class="btn-action btn-pin {% if video.is_pinned %}is-active is-pinned{% endif %}" data-videoid="{{ video.video_id }}" title="Pin (max 3)">
+                                {{ "UNPIN" if video.is_pinned else "PIN" }}
+                            </button>
+                            {% if video.is_downloaded %}
+                                <button class="btn-action btn-del-local is-active" data-videoid="{{ video.video_id }}" title="Delete offline file from disk">DELETE-LOCAL</button>
+                            {% elif video.is_downloading %}
+                                <button class="btn-action btn-cncl-dl is-active" data-videoid="{{ video.video_id }}" title="Cancel download">CNCL</button>
+                            {% else %}
+                                <button class="btn-action btn-dl" data-videoid="{{ video.video_id }}" title="Download for offline playback">DOWNLOAD</button>
+                            {% endif %}
+                            <button class="btn-action btn-hide {% if video.is_hidden %}is-active is-hidden-toggle{% endif %} {% if video.is_pinned %}btn-disabled-strike{% endif %}" 
+                                    data-videoid="{{ video.video_id }}" 
+                                    {% if video.is_pinned %}disabled title="Cannot hide a pinned video"{% else %}title="Hide"{% endif %}>
+                                {{ "UNHIDE" if video.is_hidden else "HIDE" }}
+                            </button>
+                        </div>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <p>No videos found for this channel.</p>
+            {% endif %}
+        </div>
+    </div>
+
+<div id="video-overlay">
+        <div id="tokenTrialHud" class="token-trial-hud">
+            <div class="trial-ring" id="trialRingContainer">
+                <svg width="18" height="18" viewBox="0 0 18 18">
+                    <circle class="bg" cx="9" cy="9" r="7"></circle>
+                    <circle class="progress" id="trialRing" cx="9" cy="9" r="7"></circle>
+                </svg>
+            </div>
+            <span id="trialHudText">10s preview...</span>
+        </div>
+        <div id="scrub-warning" class="scrub-warning">SCRUB COOLDOWN ACTIVE.</div>
+        <div id="video-player-container">
+            <div id="ytplayer"></div>
+            <button id="video-close-btn">X</button>
+        </div>
+    </div>
+
+    <script>
+        let player = null;
+        let lastKnownTime = 0;
+        let lastScrubTimestamp = 0;
+        let trackingInterval = null;
+        let isSeeking = false;
+        const SCRUB_COOLDOWN_MS = 30000;
+        const CIRCLE_CIRCUMFERENCE = 75.4; // 2 * pi * 12
+
+        function onYouTubeIframeAPIReady() {
+            // API ready
+        }
+
+        function createPlayer(videoId) {
+            if (player) {
+                player.destroy();
+            }
+            player = new YT.Player('ytplayer', {
+                height: '480',
+                width: '854',
+                host: 'https://www.youtube-nocookie.com',
+                videoId: videoId,
+                playerVars: { 
+                    'autoplay': 1, 
+                    'rel': 0,
+                    'disablekb': 1,
+                    'fs': 0,
+                    'origin': window.location.origin
+                },
+                events: {
+                    'onReady': (event) => {
+                        const iframe = document.getElementById('ytplayer');
+                        if (iframe) {
+                            iframe.removeAttribute('allow');
+                            iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope');
+                            iframe.setAttribute('disablepictureinpicture', 'true');
+                        }
+                        onPlayerReady(event);
+                    },
+                    'onStateChange': onPlayerStateChange
+                }
+            });
+        }
+
+        // Scrub cooldown ENFORCEMENT (timestamps, rollback) lives on below, unchanged.
+        // Only the visual countdown ring has been removed per request; the
+        // "SCRUB COOLDOWN ACTIVE" warning flash still fires on a rejected scrub.
+        function updateScrubRing() {
+            // intentionally a no-op now — ring UI removed
+        }
+
+        function onPlayerReady(event) {
+            lastKnownTime = 0;
+            lastScrubTimestamp = 0;
+            clearInterval(trackingInterval);
+            updateScrubRing();
+
+            trackingInterval = setInterval(() => {
+                if (!player || typeof player.getCurrentTime !== 'function') return;
+                const currentTime = player.getCurrentTime();
+                updateScrubRing();
+
+                if (Math.abs(currentTime - lastKnownTime) > 2.5 && !isSeeking) {
+                    const now = Date.now();
+                    if (now - lastScrubTimestamp < SCRUB_COOLDOWN_MS) {
+                        isSeeking = true;
+                        player.seekTo(lastKnownTime, true);
+                        showScrubWarning();
+                        setTimeout(() => { isSeeking = false; }, 300);
+                        return;
+                    } else {
+                        lastScrubTimestamp = now;
+                        updateScrubRing();
+                    }
+                }
+                lastKnownTime = currentTime;
+            }, 100);
+        }
+
+        function onPlayerStateChange(event) {
+            // Track state transitions if needed
+        }
+
+        function showScrubWarning() {
+            const warning = document.getElementById('scrub-warning');
+            warning.style.display = 'block';
+            setTimeout(() => { warning.style.display = 'none'; }, 2000);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const rssContent = document.getElementById('rssContent');
+            const videoOverlay = document.getElementById('video-overlay');
+            const videoCloseBtn = document.getElementById('video-close-btn');
+            const videoPlayerContainer = document.getElementById('video-player-container');
+
+            let isTurboActive = false;
+            let preTurboSpeed = 1.0;
+            let speedBadgeTimeout = null;
+
+            let trialTimer = null;
+            let trialInterval = null;
+            let tokenAlreadyBurned = false;
+            let tokensRemainingCount = null;
+            const TRIAL_DURATION_MS = 10000;
+            const TRIAL_CIRCUMFERENCE = 44; // 2 * pi * 7
+
+            function resetTrialHud() {
+                clearTimeout(trialTimer);
+                clearInterval(trialInterval);
+                const hud = document.getElementById('tokenTrialHud');
+                const ring = document.getElementById('trialRing');
+                const text = document.getElementById('trialHudText');
+                const ringContainer = document.getElementById('trialRingContainer');
+                if (hud) {
+                    hud.classList.remove('active', 'burned');
+                    text.textContent = '10s preview...';
+                    ringContainer.style.display = 'block';
+                    ring.style.strokeDashoffset = '0';
+                }
+            }
+
+            async function startTrialCountdown(videoId) {
+                resetTrialHud();
+                tokenAlreadyBurned = false;
+                const hud = document.getElementById('tokenTrialHud');
+                const ring = document.getElementById('trialRing');
+                const text = document.getElementById('trialHudText');
+                const ringContainer = document.getElementById('trialRingContainer');
+
+                let tokensLabel = '';
+                try {
+                    const tokenRes = await fetch('/api/can_watch');
+                    const tokenData = await tokenRes.json();
+                    if (tokenData.tokens) {
+                        tokensLabel = ` (${tokenData.tokens.remaining}/${tokenData.tokens.max} left)`;
+                    }
+                } catch (e) {
+                    console.error('Could not fetch token count:', e);
+                }
+
+                const startTime = Date.now();
+                hud.classList.add('active');
+
+                trialInterval = setInterval(() => {
+                    const elapsed = Date.now() - startTime;
+                    const remainingSec = Math.max(0, Math.ceil((TRIAL_DURATION_MS - elapsed) / 1000));
+                    text.textContent = `${remainingSec}s preview...${tokensLabel}`;
+
+                    const progress = elapsed / TRIAL_DURATION_MS;
+                    ring.style.strokeDashoffset = `${TRIAL_CIRCUMFERENCE * progress}`;
+                }, 100);
+
+                trialTimer = setTimeout(async () => {
+                    clearInterval(trialInterval);
+                    try {
+                        const res = await fetch('/api/consume_token', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        const data = await res.json();
+                        tokenAlreadyBurned = true;
+
+                        hud.classList.add('burned');
+                        ringContainer.style.display = 'none';
+                        if (data.tokens) tokensRemainingCount = data.tokens.remaining;
+                        text.textContent = data.tokens ? `Token burned — ${data.tokens.remaining}/${data.tokens.max} left` : 'Token burned';
+
+                        setTimeout(() => {
+                            hud.classList.remove('active');
+                        }, 2500);
+                    } catch (e) {
+                        console.error('Error burning token:', e);
+                    }
+                }, TRIAL_DURATION_MS);
+            }
+
+            function showSpeedBadge(rate) {
+                const badge = document.getElementById('speed-badge');
+                if (!badge) return;
+                badge.textContent = `${rate.toFixed(2).replace(/\.?0+$/, '')}x`;
+                badge.classList.add('visible');
+                clearTimeout(speedBadgeTimeout);
+                speedBadgeTimeout = setTimeout(() => {
+                    badge.classList.remove('visible');
+                }, 900);
+            }
+
+            function openVideoInOverlay(videoId) {
+                const targetItem = document.getElementById(`video-item-${videoId}`);
+                const isLocal = targetItem && targetItem.dataset.local === '1';
+
+                if (isLocal) {
+                    const container = document.getElementById('video-player-container');
+                    container.innerHTML = `
+                        <video id="localVideoPlayer" width="854" height="480" controls controlsList="nodownload noplaybackrate nofullscreen" disablePictureInPicture oncontextmenu="return false;" autoplay style="background:#000; outline:none;">
+                            <source src="/downloads/${videoId}.mp4" type="video/mp4">
+                            Your browser does not support HTML5 video.
+                        </video>
+                        <div id="speed-badge" class="speed-badge">1.0x</div>
+                        <button id="video-fullscreen-btn" title="Fullscreen">⛶</button>
+                        <button id="video-close-btn">X</button>
+                    `;
+                    document.getElementById('video-close-btn').addEventListener('click', attemptCloseVideo);
+                    bindFullscreenButton();
+                    videoOverlay.classList.add('show');
+                    startTrialCountdown(videoId);
+                } else {
+                    const container = document.getElementById('video-player-container');
+                    container.innerHTML = '<div id="ytplayer"></div><button id="video-close-btn">X</button>';
+                    document.getElementById('video-close-btn').addEventListener('click', attemptCloseVideo);
+                    createPlayer(videoId);
+                    videoOverlay.classList.add('show');
+                    startTrialCountdown(videoId);
+                }
+            }
+
+            function attemptCloseVideo() {
+                if (tokenAlreadyBurned) {
+                    const countMsg = tokensRemainingCount !== null ? ` (${tokensRemainingCount} tokens left)` : '';
+                    const confirmExit = confirm(`⚠️ Token already burned!${countMsg} Are you sure you want to close this video?`);
+                    if (!confirmExit) return;
+                }
+                closeVideoOverlay();
+            }
+
+            function closeVideoOverlay() {
+                resetTrialHud();
+                clearInterval(trackingInterval);
+                const localVid = document.getElementById('localVideoPlayer');
+                if (localVid) {
+                    localVid.pause();
+                    localVid.removeAttribute('src');
+                    localVid.load();
+                }
+                if (player) {
+                    if (typeof player.stopVideo === 'function') {
+                        player.stopVideo();
+                    }
+                    player.destroy();
+                    player = null;
+                }
+                const container = document.getElementById('video-player-container');
+                container.innerHTML = '<div id="ytplayer"></div><button id="video-close-btn">X</button>';
+                document.getElementById('video-close-btn').addEventListener('click', attemptCloseVideo);
+                videoOverlay.classList.remove('show');
+                tokenAlreadyBurned = false;
+            }
+
+            rssContent.addEventListener('click', async (event) => {
+                const hideBtn = event.target.closest('.btn-hide');
+                const titleLink = event.target.closest('.video-title-link');
+                const thumbnailContainer = event.target.closest('.thumbnail-container');
+                const favBtn = event.target.closest('.btn-fav');
+                const pinBtn = event.target.closest('.btn-pin');
+                const dlBtn = event.target.closest('.btn-dl');
+                const cnclBtn = event.target.closest('.btn-cncl-dl');
+                const delLocalBtn = event.target.closest('.btn-del-local');
+
+                if (delLocalBtn) {
+                    event.stopPropagation();
+                    const videoId = delLocalBtn.dataset.videoid;
+                    if (!confirm("⚠️ Delete this downloaded file from disk?")) return;
+
+                    delLocalBtn.disabled = true;
+                    delLocalBtn.textContent = '...';
+
+                    try {
+                        const res = await fetch('/api/delete_download', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            const card = delLocalBtn.closest('.article-item');
+                            if (card) card.dataset.local = '0';
+
+                            const actionBtns = delLocalBtn.closest('.action-btns');
+                            const hideBtnRef = actionBtns ? actionBtns.querySelector('.btn-hide') : null;
+                            delLocalBtn.remove();
+
+                            if (actionBtns) {
+                                const newDlBtn = document.createElement('button');
+                                newDlBtn.className = 'btn-action btn-dl';
+                                newDlBtn.dataset.videoid = videoId;
+                                newDlBtn.title = 'Download for offline playback';
+                                newDlBtn.textContent = 'DOWNLOAD';
+                                actionBtns.insertBefore(newDlBtn, hideBtnRef);
+                            }
+                        } else {
+                            alert(data.message || 'Failed to delete file.');
+                            delLocalBtn.disabled = false;
+                            delLocalBtn.textContent = 'DELETE-LOCAL';
+                        }
+                    } catch (e) {
+                        console.error('Delete error:', e);
+                        delLocalBtn.disabled = false;
+                        delLocalBtn.textContent = 'DELETE-LOCAL';
+                    }
+                    return;
+                }
+
+                if (cnclBtn) {
+                    event.stopPropagation();
+                    const videoId = cnclBtn.dataset.videoid;
+                    if (!confirm("Cancel this download in progress?")) return;
+
+                    cnclBtn.disabled = true;
+                    cnclBtn.textContent = '...';
+
+                    try {
+                        const res = await fetch('/api/cancel_download', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            const actionBtns = cnclBtn.closest('.action-btns');
+                            const hideBtnRef = actionBtns ? actionBtns.querySelector('.btn-hide') : null;
+                            cnclBtn.remove();
+
+                            if (actionBtns) {
+                                const newDlBtn = document.createElement('button');
+                                newDlBtn.className = 'btn-action btn-dl';
+                                newDlBtn.dataset.videoid = videoId;
+                                newDlBtn.title = 'Download for offline playback';
+                                newDlBtn.textContent = 'DOWNLOAD';
+                                actionBtns.insertBefore(newDlBtn, hideBtnRef);
+                            }
+                        } else {
+                            alert(data.message || 'Failed to cancel download.');
+                            cnclBtn.disabled = false;
+                            cnclBtn.textContent = 'CANCEL-DOWNLOAD';
+                        }
+                    } catch (e) {
+                        console.error('Cancel error:', e);
+                        cnclBtn.disabled = false;
+                        cnclBtn.textContent = 'CANCEL-DOWNLOAD';
+                    }
+                    return;
+                }
+
+                if (dlBtn) {
+                    event.stopPropagation();
+                    const videoId = dlBtn.dataset.videoid;
+                    if (!confirm("Download this video for offline playback?")) return;
+
+                    dlBtn.textContent = 'CANCEL-DOWNLOAD';
+                    dlBtn.className = 'btn-action btn-cncl-dl is-active';
+
+                    try {
+                        await fetch('/api/download_video', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        startDownloadPolling();
+                    } catch (e) {
+                        console.error('Download error:', e);
+                        dlBtn.className = 'btn-action btn-dl';
+                        dlBtn.textContent = 'DLD';
+                    }
+                    return;
+                }
+
+                if (favBtn) {
+                    event.stopPropagation();
+                    const videoId = favBtn.dataset.videoid;
+                    favBtn.disabled = true;
+                    try {
+                        const res = await fetch('/api/toggle_favorite', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            favBtn.textContent = data.is_favorite ? 'UNFAV' : 'FAV';
+                            favBtn.classList.toggle('is-active', data.is_favorite);
+                        } else {
+                            alert('Toggle fav failed: ' + (data.message || ''));
+                        }
+                    } catch (e) {
+                        console.error('Fav error:', e);
+                    } finally {
+                        favBtn.disabled = false;
+                    }
+                    return;
+                }
+
+                if (pinBtn) {
+                    event.stopPropagation();
+                    const videoId = pinBtn.dataset.videoid;
+                    const isCurrentlyPinned = pinBtn.classList.contains('is-pinned');
+
+                    if (isCurrentlyPinned) {
+                        if (!confirm("Unpin this video from your top slots?")) return;
+                    }
+
+                    try {
+                        const res = await fetch('/api/toggle_pinned', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            pinBtn.textContent = data.is_pinned ? 'UNPIN' : 'PIN';
+                            pinBtn.classList.toggle('is-pinned', data.is_pinned);
+                            pinBtn.classList.toggle('is-active', data.is_pinned);
+
+                            const card = pinBtn.closest('.article-item');
+                            if (card) {
+                                const thumb = card.querySelector('.thumbnail-container');
+                                let flair = thumb ? thumb.querySelector('.pin-flair') : null;
+                                const cardHideBtn = card.querySelector('.btn-hide');
+
+                                if (data.is_pinned) {
+                                    if (!flair && thumb) {
+                                        flair = document.createElement('span');
+                                        flair.className = 'pin-flair';
+                                        flair.title = 'Pinned';
+                                        flair.textContent = '📌';
+                                        thumb.appendChild(flair);
+                                    }
+                                    if (cardHideBtn) {
+                                        cardHideBtn.classList.add('btn-disabled-strike');
+                                        cardHideBtn.disabled = true;
+                                        cardHideBtn.title = 'Cannot hide a pinned video';
+                                    }
+                                } else {
+                                    if (flair) flair.remove();
+                                    if (cardHideBtn) {
+                                        cardHideBtn.classList.remove('btn-disabled-strike');
+                                        cardHideBtn.disabled = false;
+                                        cardHideBtn.title = 'Hide';
+                                    }
+                                }
+                            }
+                        } else {
+                            alert(data.message || 'Could not pin video.');
+                        }
+                    } catch (e) {
+                        console.error('Pin error:', e);
+                        alert('Network/server error toggling pin.');
+                    }
+                    return;
+                }
+
+                if (hideBtn) {
+                    event.stopPropagation();
+                    if (hideBtn.classList.contains('btn-disabled-strike')) return;
+
+                    const videoId = hideBtn.dataset.videoid;
+                    const card = hideBtn.closest('.article-item');
+
+                    try {
+                        const res = await fetch('/api/hide_video', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            hideBtn.textContent = data.is_hidden ? 'UNHIDE' : 'HIDE';
+                            hideBtn.classList.toggle('is-active', data.is_hidden);
+                            hideBtn.classList.toggle('is-hidden-toggle', data.is_hidden);
+                            if (card) card.classList.toggle('is-obscured', data.is_hidden);
+                        } else {
+                            alert('Error toggling hidden state: ' + (data.message || ''));
+                        }
+                    } catch (error) {
+                        console.error('Fetch error:', error);
+                        alert('Could not connect to server to toggle hidden state.');
+                    }
+                    return;
+                }
+
+                if (titleLink) {
+                    event.preventDefault();
+                    openVideoInOverlay(titleLink.dataset.videoid);
+                } else if (thumbnailContainer) {
+                    openVideoInOverlay(thumbnailContainer.dataset.videoid);
+                }
+            });
+
+            videoCloseBtn.addEventListener('click', attemptCloseVideo);
+
+            if (videoPlayerContainer) {
+                videoPlayerContainer.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                });
+            }
+
+            document.addEventListener('keydown', (event) => {
+                if (!videoOverlay.classList.contains('show')) return;
+
+                if (event.key === 'Escape') {
+                    attemptCloseVideo();
+                    return;
+                }
+
+                const localVid = document.getElementById('localVideoPlayer');
+                if (!localVid) return;
+
+                const key = event.key.toLowerCase();
+
+                if (key === 'z') {
+                    if (event.repeat) return;
+                    event.preventDefault();
+                    isTurboActive = true;
+                    preTurboSpeed = localVid.playbackRate;
+                    localVid.playbackRate = preTurboSpeed * 2;
+                    showSpeedBadge(localVid.playbackRate);
+                } else if (key === 'x') {
+                    if (event.repeat) return;
+                    event.preventDefault();
+                    isTurboActive = true;
+                    preTurboSpeed = localVid.playbackRate;
+                    localVid.playbackRate = preTurboSpeed * 4;
+                    showSpeedBadge(localVid.playbackRate);
+                } else if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    localVid.playbackRate = Math.min(2.0, parseFloat((localVid.playbackRate + 0.25).toFixed(2)));
+                    showSpeedBadge(localVid.playbackRate);
+                } else if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    localVid.playbackRate = Math.max(0.25, parseFloat((localVid.playbackRate - 0.25).toFixed(2)));
+                    showSpeedBadge(localVid.playbackRate);
+                }
+            });
+
+            document.addEventListener('keyup', (event) => {
+                if (!videoOverlay.classList.contains('show')) return;
+
+                const localVid = document.getElementById('localVideoPlayer');
+                if (!localVid) return;
+
+                if (event.key.toLowerCase() === 'z' && isTurboActive) {
+                    event.preventDefault();
+                    isTurboActive = false;
+                    localVid.playbackRate = preTurboSpeed;
+                    showSpeedBadge(preTurboSpeed);
+                }
+                if (event.key.toLowerCase() === 'x' && isTurboActive) {
+                    event.preventDefault();
+                    isTurboActive = false;
+                    localVid.playbackRate = preTurboSpeed;
+                    showSpeedBadge(preTurboSpeed);
+                }
+            });
+
+            let downloadPollInterval = null;
+
+            function checkDownloadStatus() {
+                fetch('/api/download_status')
+                    .then(res => res.json())
+                    .then(data => {
+                        const downloaded = new Set(data.downloaded_ids || []);
+                        const downloading = new Set(data.downloading_ids || []);
+
+                        document.querySelectorAll('.article-item').forEach(item => {
+                            const vidId = item.id.replace('video-item-', '');
+                            const actionBtns = item.querySelector('.action-btns');
+                            if (!actionBtns) return;
+
+                            const dlBtn = actionBtns.querySelector('.btn-dl');
+                            const cnclBtn = actionBtns.querySelector('.btn-cncl-dl');
+                            const delBtn = actionBtns.querySelector('.btn-del-local');
+                            const hideBtnRef = actionBtns.querySelector('.btn-hide');
+
+                            if (downloaded.has(vidId)) {
+                                item.dataset.local = '1';
+                                if (dlBtn) dlBtn.remove();
+                                if (cnclBtn) cnclBtn.remove();
+                                if (!delBtn) {
+                                    const btn = document.createElement('button');
+                                    btn.className = 'btn-action btn-del-local is-active';
+                                    btn.dataset.videoid = vidId;
+                                    btn.title = 'Delete offline file from disk';
+                                    btn.textContent = 'DELETE-LOCAL';
+                                    actionBtns.insertBefore(btn, hideBtnRef);
+                                }
+                            } else if (downloading.has(vidId)) {
+                                if (dlBtn) dlBtn.remove();
+                                if (delBtn) delBtn.remove();
+                                if (!cnclBtn) {
+                                    const btn = document.createElement('button');
+                                    btn.className = 'btn-action btn-cncl-dl is-active';
+                                    btn.dataset.videoid = vidId;
+                                    btn.title = 'Cancel download';
+                                    btn.textContent = 'CANCEL-DOWNLOAD';
+                                    actionBtns.insertBefore(btn, hideBtnRef);
+                                }
+                            } else {
+                                item.dataset.local = '0';
+                                if (cnclBtn) cnclBtn.remove();
+                                if (delBtn) delBtn.remove();
+                                if (!dlBtn) {
+                                    const btn = document.createElement('button');
+                                    btn.className = 'btn-action btn-dl';
+                                    btn.dataset.videoid = vidId;
+                                    btn.title = 'Download for offline playback';
+                                    btn.textContent = 'DOWNLOAD';
+                                    actionBtns.insertBefore(btn, hideBtnRef);
+                                }
+                            }
+                        });
+
+                        if (downloading.size === 0 && downloadPollInterval) {
+                            clearInterval(downloadPollInterval);
+                            downloadPollInterval = null;
+                        }
+                    })
+                    .catch(err => console.error('Status poll failed:', err));
+            }
+
+            function startDownloadPolling() {
+                if (!downloadPollInterval) {
+                    checkDownloadStatus();
+                    downloadPollInterval = setInterval(checkDownloadStatus, 2000);
+                }
+            }
+
+            if (document.querySelector('.btn-cncl-dl')) {
+                startDownloadPolling();
+            }
+        });
+    </script>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const hud = document.getElementById('backfill-hud');
+            const thisChannelId = hud ? hud.dataset.channelid : null;
+            let backfillPollInterval = null;
+
+            let hasSeenActiveSync = false;
+
+            function renderRunningUI(data) {
+                const isStarting = data.status === 'starting';
+                const statusNote = isStarting 
+                    ? `Listing video catalog for '${data.channel_name}'…`
+                    : `Syncing '${data.channel_name}': ${data.current}/${data.total} ${data.status === 'cancelling' ? '(cancelling&hellip;)' : ''}`;
+
+                hud.innerHTML = `
+                    <span class="backfill-status-note" id="backfill-status-text">
+                        ${statusNote}
+                    </span>
+                    <button id="cancelBackfillBtn" class="btn-action btn-unsub" ${data.status === 'cancelling' ? 'disabled' : ''}>
+                        ${data.status === 'cancelling' ? 'Cancelling…' : 'Cancel sync'}
+                    </button>
+                `;
+                bindCancelEvent();
+            }
+
+            function pollBackfillStatus() {
+                fetch('/api/backfill_status')
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.status === 'starting' || data.status === 'running' || data.status === 'cancelling') {
+                            hasSeenActiveSync = true;
+                            renderRunningUI(data);
+                            // Also detect if all missing items were processed
+                            if (data.status === 'running' && data.total > 0 && data.current >= data.total) {
+                                if (backfillPollInterval) {
+                                    clearInterval(backfillPollInterval);
+                                    backfillPollInterval = null;
+                                }
+                                setTimeout(() => window.location.reload(), 1000);
+                            }
+                        } else if (data.status === 'idle' && hasSeenActiveSync) {
+                            if (backfillPollInterval) {
+                                clearInterval(backfillPollInterval);
+                                backfillPollInterval = null;
+                            }
+                            window.location.reload();
+                        }
+                    })
+                    .catch(err => console.error('Backfill status poll error:', err));
+            }
+
+            function startBackfillPolling() {
+                if (!backfillPollInterval) {
+                    pollBackfillStatus();
+                    backfillPollInterval = setInterval(pollBackfillStatus, 1500);
+                }
+            }
+
+            function bindBackfillEvent() {
+                const btn = document.getElementById('backfillBtn');
+                if (!btn) return;
+
+                btn.addEventListener('click', async () => {
+                    if (btn.disabled) return;
+                    btn.disabled = true;
+                    btn.textContent = 'Starting…';
+
+                    try {
+                        const res = await fetch('/api/backfill_channel', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ channel_id: thisChannelId })
+                        });
+                        const data = await res.json();
+
+                        if (data.success) {
+                            startBackfillPolling();
+                        } else {
+                            alert('Could not start backfill: ' + data.message);
+                            btn.disabled = false;
+                            btn.textContent = 'Retry fetch';
+                        }
+                    } catch (error) {
+                        console.error('Backfill request failed:', error);
+                        alert('Could not connect to server.');
+                        btn.disabled = false;
+                    }
+                });
+            }
+
+            function bindCancelEvent() {
+                const cBtn = document.getElementById('cancelBackfillBtn');
+                if (!cBtn) return;
+
+                cBtn.addEventListener('click', async () => {
+                    if (cBtn.disabled) return;
+                    cBtn.disabled = true;
+                    cBtn.textContent = 'Cancelling…';
+
+                    try {
+                        const res = await fetch('/api/cancel_backfill', { method: 'POST' });
+                        const data = await res.json();
+                        if (!data.success) {
+                            alert('Could not cancel: ' + data.message);
+                            cBtn.disabled = false;
+                            cBtn.textContent = 'Cancel sync';
+                        }
+                    } catch (error) {
+                        console.error('Cancel request failed:', error);
+                        cBtn.disabled = false;
+                        cBtn.textContent = 'Cancel sync';
+                    }
+                });
+            }
+
+            bindBackfillEvent();
+            bindCancelEvent();
+
+            // Resume polling automatically if user navigated here while sync was already active
+            {% if current_backfill.status in ['running', 'cancelling'] %}
+                startBackfillPolling();
+            {% endif %}
+        });
+    </script>
+</body>
+</html>

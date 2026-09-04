@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🧘‍♂️ Focus Feeder: YouTube RSS Monk Feed</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='assets/style.css') }}">
+</head>
+<body>
+    {% macro video_card(video, pinned_slot=false) %}
+        <div class="article-item {% if video.is_hidden %}is-obscured{% endif %} {% if video.is_favorite %}is-favorited{% endif %}" id="item-{{ video.video_id }}">
+            <div class="thumbnail-container" data-videoid="{{ video.video_id }}">
+                <img src="{{ video.thumbnail_url }}" alt="Thumbnail for '{{ video.title }}'" loading="lazy" onerror="this.onerror=null;this.src='{{ url_for('static', filename='assets/no-thumbnail.png') }}';">
+                <div class="play-icon"></div>
+                {% if video.is_pinned %}<span class="pin-flair" title="Pinned">📌</span>{% endif %}
+            </div>
+            <div class="article-content">
+                <span class="channel-name">
+                    {% if tokens.is_weekend %}
+                        <a href="{{ url_for('channel_view', channel_id=video.channel_id) }}">{{ video.channel_name }}</a>
+                    {% else %}
+                        {{ video.channel_name }}
+                    {% endif %}
+                </span>
+                <h3><a href="#" class="video-title-link" data-videoid="{{ video.video_id }}">{{ video.title }}</a></h3>
+                <p class="published-date">{{ video.published_at_formatted }}{% if is_favorites_page and video.is_cooling_down %} <span class="cooldown-flair" title="In cooldown until {{ video.cooldown_until_formatted }}">❄️</span>{% endif %}</p>
+            </div>
+            <div class="action-btns">
+                <button class="btn-action btn-fav {% if video.is_favorite %}is-active{% endif %}" data-videoid="{{ video.video_id }}" title="Favorite">
+                    {{ "UNFAV" if video.is_favorite else "FAV" }}
+                </button>
+                <button class="btn-action btn-pin {% if video.is_pinned %}is-active is-pinned{% endif %}" data-videoid="{{ video.video_id }}" title="Pin (max {{ pinned_max }})">
+                    {{ "UNPIN" if video.is_pinned else "PIN" }}
+                </button>
+                {% if video.is_downloaded %}
+                    <button class="btn-action btn-del-local is-active" data-videoid="{{ video.video_id }}" title="Delete offline file from disk">DELETE-LOCAL</button>
+                {% elif video.is_downloading %}
+                    <button class="btn-action btn-cncl-dl is-active" data-videoid="{{ video.video_id }}" title="CANCEL-DOWNL">CANCEL-DOWNL</button>
+                {% else %}
+                    <button class="btn-action btn-dl" data-videoid="{{ video.video_id }}" title="Download for offline playback">DOWNLOAD</button>
+                {% endif %}
+                <button class="btn-action btn-hide {% if video.is_hidden %}is-active is-hidden-toggle{% endif %} {% if video.is_pinned %}btn-disabled-strike{% endif %}" 
+                        data-videoid="{{ video.video_id }}" 
+                        {% if video.is_pinned %}disabled title="Cannot hide a pinned video"{% else %}title="Hide"{% endif %}>
+                    {{ "UNHIDE" if video.is_hidden else "HIDE" }}
+                </button>
+            </div>
+        </div>
+    {% endmacro %}
+
+    <div class="container">
+                <h1>🧘‍♂️ YT Monk Feed: {{ "Favorites" if is_favorites_page else "Daily Feed" }}</h1>
+        <div class="token-hud">
+            <div>
+                <span>REMAINING TOKENS: <strong class="token-count {% if tokens.remaining == 0 %}locked{% endif %}" id="token-counter">{{ tokens.remaining }} / {{ tokens.max }}</strong></span>
+            </div>
+            <div class="top-nav">
+                <a href="{{ url_for('index') }}" class="{% if not is_favorites_page %}is-current{% endif %}">Daily Feed</a>
+                {% if tokens.is_weekend %}
+                    <a href="{{ url_for('favorites_view') }}" class="{% if is_favorites_page %}is-current{% endif %}">Favorites</a>
+                {% endif %}
+                <a href="{{ url_for('list_feeds') }}">Manage Feeds</a>
+            </div>
+            <button id="sortOrderBtn" class="btn-action" title="Cycle sort order">↕ Oldest First</button>
+        </div>
+
+        {% if pinned_videos is defined and not is_favorites_page %}
+        <div id="pinnedSection">
+            <h2>📌 Pinned ({{ pinned_videos|length }}/{{ pinned_max }})</h2>
+            <div id="pinnedContent">
+                {% for video in pinned_videos %}
+                    {{ video_card(video, pinned_slot=true) }}
+                {% endfor %}
+                {% for _ in range(pinned_max - pinned_videos|length) %}
+                    <div class="article-item pinned-slot-empty">
+                        <span>Pinned slot — empty</span>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <div id="rssContent">
+            {% if videos %}
+                {% for video in videos %}
+                    {{ video_card(video) }}
+                {% endfor %}
+            {% else %}
+                <p class="empty-message">No videos available.</p>
+            {% endif %}
+        </div>
+
+        <div class="storage-footer">
+            <span>Disk Used: <strong id="storage-size-display">{{ downloads_storage_size }}</strong> ({{ downloaded_count }} videos)</span>
+            <span class="storage-footer-sep">•</span>
+            <a href="{{ url_for('storage_view') }}">Manage storage</a>
+        </div>
+
+        {% if not is_favorites_page and daily_report %}
+        <div class="feed-debug-report">
+            <p>[FEED BUILD REPORT — {{ daily_report.built_at }} — {{ "WEEKEND" if daily_report.is_weekend else "WEEKDAY" }} MODE]</p>
+            <p>Scanned {{ daily_report.total_active_videos_scanned }} active (non-hidden) videos total • {{ daily_report.videos_in_date_window }} within {{ daily_report.date_window_days }}-day window</p>
+            <p>Favorites: {{ daily_report.total_favorites }} total, {{ daily_report.favorites_excluded_pinned }} excluded (pinned), {{ daily_report.favorites_frozen_cooldown }} frozen (cooldown), {{ daily_report.favorites_eligible }} eligible → {{ daily_report.favorites_selected }}/{{ daily_report.favorites_target }} selected</p>
+            <p>Fresh pool: {{ daily_report.fresh_excluded_cooldown_or_cap }} excluded (cooldown/channel-cap), {{ daily_report.fresh_candidates_after_caps }} candidates → {{ daily_report.fresh_selected }}/{{ daily_report.fresh_target }} selected</p>
+            <p>Pinned excluded from pool: {{ daily_report.pinned_excluded_from_pool }} • Pool target: {{ daily_report.pool_size_target }} • Final batch: {{ daily_report.final_batch_size }} • Cooldown: {{ daily_report.cooldown_days }} days</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <div id="video-overlay">
+        <div id="tokenTrialHud" class="token-trial-hud">
+            <div class="trial-ring" id="trialRingContainer">
+                <svg width="18" height="18" viewBox="0 0 18 18">
+                    <circle class="bg" cx="9" cy="9" r="7"></circle>
+                    <circle class="progress" id="trialRing" cx="9" cy="9" r="7"></circle>
+                </svg>
+            </div>
+            <span id="trialHudText">10s preview...</span>
+        </div>
+        <div id="scrub-warning" class="scrub-warning">SCRUB COOLDOWN ACTIVE.</div>
+        <div id="video-player-container">
+            <div id="ytplayer"></div>
+            <button id="video-close-btn">X</button>
+        </div>
+    </div>
+
+    <script>
+        let player = null;
+        let ytApiLoaded = false;
+        let lastKnownTime = 0;
+
+        function loadYouTubeApi(callback) {
+            if (window.YT && window.YT.Player) {
+                callback();
+                return;
+            }
+            if (ytApiLoaded) {
+                const checkInterval = setInterval(() => {
+                    if (window.YT && window.YT.Player) {
+                        clearInterval(checkInterval);
+                        callback();
+                    }
+                }, 100);
+                return;
+            }
+            ytApiLoaded = true;
+            const tag = document.createElement('script');
+            tag.src = "https://www.youtube.com/iframe_api";
+            tag.onerror = () => {
+                alert("Offline mode: Cannot load online YouTube player without an internet connection.");
+            };
+            const firstScriptTag = document.getElementsByTagName('script')[0];
+            firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+
+            window.onYouTubeIframeAPIReady = () => {
+                callback();
+            };
+        }
+        let lastScrubTimestamp = 0;
+        let trackingInterval = null;
+        let isSeeking = false;
+        const SCRUB_COOLDOWN_MS = 30000;
+
+        function onYouTubeIframeAPIReady() {
+            // API ready
+        }
+
+        function createPlayer(videoId) {
+            if (player) {
+                player.destroy();
+            }
+            player = new YT.Player('ytplayer', {
+                height: '480',
+                width: '854',
+                host: 'https://www.youtube-nocookie.com',
+                videoId: videoId,
+                playerVars: { 
+                    'autoplay': 1, 
+                    'rel': 0,
+                    'disablekb': 1,
+                    'fs': 0,
+                    'origin': window.location.origin
+                },
+                events: {
+                    'onReady': (event) => {
+                        const iframe = document.getElementById('ytplayer');
+                        if (iframe) {
+                            // Strip PiP permissions and browser hooks
+                            iframe.removeAttribute('allow');
+                            iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope');
+                            iframe.setAttribute('disablepictureinpicture', 'true');
+                        }
+                        onPlayerReady(event);
+                    },
+                    'onStateChange': onPlayerStateChange
+                }
+            });
+        }
+
+        // Scrub cooldown ENFORCEMENT (timestamps, rollback) lives on below, unchanged.
+        // Only the visual countdown ring has been removed per request; the
+        // "SCRUB COOLDOWN ACTIVE" warning flash still fires on a rejected scrub.
+        function updateScrubRing() {
+            // intentionally a no-op now — ring UI removed
+        }
+
+        function onPlayerReady(event) {
+            lastKnownTime = 0;
+            lastScrubTimestamp = 0;
+            clearInterval(trackingInterval);
+            updateScrubRing();
+            
+            trackingInterval = setInterval(() => {
+                if (!player || typeof player.getCurrentTime !== 'function') return;
+                const currentTime = player.getCurrentTime();
+                updateScrubRing();
+                
+                // If playback skipped more than 2 seconds without regular time elapsing
+                if (Math.abs(currentTime - lastKnownTime) > 2.5 && !isSeeking) {
+                    const now = Date.now();
+                    if (now - lastScrubTimestamp < SCRUB_COOLDOWN_MS) {
+                        // Cooldown active, rollback
+                        isSeeking = true;
+                        player.seekTo(lastKnownTime, true);
+                        showScrubWarning();
+                        setTimeout(() => { isSeeking = false; }, 300);
+                        return;
+                    } else {
+                        // Permitted scrub
+                        lastScrubTimestamp = now;
+                        updateScrubRing();
+                    }
+                }
+                lastKnownTime = currentTime;
+            }, 100);
+        }
+
+        function onPlayerStateChange(event) {
+            // Track state transitions if needed
+        }
+
+        function showScrubWarning() {
+            const warning = document.getElementById('scrub-warning');
+            warning.style.display = 'block';
+            setTimeout(() => { warning.style.display = 'none'; }, 2000);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const sortBtn = document.getElementById('sortOrderBtn');
+            if (sortBtn) {
+                const container = document.getElementById('rssContent');
+                // Capture the initial DOM element order on load (default newest/initial feed order)
+                const initialItems = container ? Array.from(container.children) : [];
+                // Modes cycle: 0 -> Oldest, 1 -> Scramble, 2 -> Newest
+                let sortState = 0;
+
+                sortBtn.addEventListener('click', () => {
+                    if (!container || initialItems.length === 0) return;
+
+                    if (sortState === 0) {
+                        // Switch to Oldest First
+                        const reversed = [...initialItems].reverse();
+                        reversed.forEach(item => container.appendChild(item));
+                        sortBtn.textContent = '🔀 Scramble';
+                        sortState = 1;
+                    } else if (sortState === 1) {
+                        // Switch to Scramble
+                        const shuffled = [...initialItems];
+                        for (let i = shuffled.length - 1; i > 0; i--) {
+                            const j = Math.floor(Math.random() * (i + 1));
+                            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+                        }
+                        shuffled.forEach(item => container.appendChild(item));
+                        sortBtn.textContent = '↕ Newest First';
+                        sortState = 2;
+                    } else {
+                        // Reset back to original Newest First order
+                        initialItems.forEach(item => container.appendChild(item));
+                        sortBtn.textContent = '↕ Oldest First';
+                        sortState = 0;
+                    }
+                });
+            }            
+            const rssContent = document.getElementById('rssContent');
+            const pinnedContent = document.getElementById('pinnedContent');
+            const videoOverlay = document.getElementById('video-overlay');
+            const videoCloseBtn = document.getElementById('video-close-btn');
+            const isWeekend = {{ 'true' if tokens.is_weekend else 'false' }};
+            
+            if (videoCloseBtn) {
+                videoCloseBtn.addEventListener('click', attemptCloseVideo);
+            }
+
+            let downloadPollInterval = null;
+
+            function checkDownloadStatus() {
+                fetch('/api/download_status')
+                    .then(res => res.json())
+                    .then(data => {
+                        const downloaded = new Set(data.downloaded_ids || []);
+                        const downloading = new Set(data.downloading_ids || []);
+
+                        // Update buttons across all items in DOM
+                        document.querySelectorAll('.article-item').forEach(item => {
+                            const vidId = item.id.replace('item-', '');
+                            const actionBtns = item.querySelector('.action-btns');
+                            if (!actionBtns) return;
+
+                            const dlBtn = actionBtns.querySelector('.btn-dl');
+                            const cnclBtn = actionBtns.querySelector('.btn-cncl-dl');
+                            const delBtn = actionBtns.querySelector('.btn-del-local');
+                            const hideBtnRef = actionBtns.querySelector('.btn-hide');
+
+                            if (downloaded.has(vidId)) {
+                                if (dlBtn) dlBtn.remove();
+                                if (cnclBtn) cnclBtn.remove();
+                                if (!delBtn) {
+                                    const btn = document.createElement('button');
+                                    btn.className = 'btn-action btn-del-local is-active';
+                                    btn.dataset.videoid = vidId;
+                                    btn.title = 'Delete offline file from disk';
+                                    btn.textContent = 'DELETE-LOCAL';
+                                    actionBtns.insertBefore(btn, hideBtnRef);
+                                }
+                            } else if (downloading.has(vidId)) {
+                                if (dlBtn) dlBtn.remove();
+                                if (delBtn) delBtn.remove();
+                                if (!cnclBtn) {
+                                    const btn = document.createElement('button');
+                                    btn.className = 'btn-action btn-cncl-dl is-active';
+                                    btn.dataset.videoid = vidId;
+                                    btn.title = 'CANCEL-DOWNLOAD';
+                                    btn.textContent = 'CANCEL-DOWNLOAD';
+                                    actionBtns.insertBefore(btn, hideBtnRef);
+                                }
+                            } else {
+                                if (cnclBtn) cnclBtn.remove();
+                                if (delBtn) delBtn.remove();
+                                if (!dlBtn) {
+                                    const btn = document.createElement('button');
+                                    btn.className = 'btn-action btn-dl';
+                                    btn.dataset.videoid = vidId;
+                                    btn.title = 'Download for offline playback';
+                                    btn.textContent = 'DOWNLOAD';
+                                    actionBtns.insertBefore(btn, hideBtnRef);
+                                }
+                            }
+                        });
+
+                        // Update footer disk storage indicator
+                        const footer = document.querySelector('.storage-footer');
+                        if (footer && data.storage_size) {
+                            const span = footer.querySelector('span');
+                            if (span) {
+                                span.innerHTML = `Disk Used: <strong id="storage-size-display">${data.storage_size}</strong> (${downloaded.size} videos)`;
+                            }
+                        }
+
+                        // Stop polling if no background downloads are left
+                        if (downloading.size === 0 && downloadPollInterval) {
+                            clearInterval(downloadPollInterval);
+                            downloadPollInterval = null;
+                        }
+                    })
+                    .catch(err => console.error('Status poll failed:', err));
+            }
+
+            function startDownloadPolling() {
+                if (!downloadPollInterval) {
+                    checkDownloadStatus();
+                    downloadPollInterval = setInterval(checkDownloadStatus, 2000);
+                }
+            }
+
+            // If a download was already active when page loaded, resume polling immediately.
+            // Downloads are now available from every video card, not just favorites.
+            if (document.querySelector('.badge-dl')) {
+                startDownloadPolling();
+            }
+
+            let trialTimer = null;
+            let trialInterval = null;
+            let tokenAlreadyBurned = false;
+            let tokensRemainingCount = null;
+            const TRIAL_DURATION_MS = 10000;
+            const TRIAL_CIRCUMFERENCE = 44; // 2 * pi * 7
+
+            function resetTrialHud() {
+                clearTimeout(trialTimer);
+                clearInterval(trialInterval);
+                const hud = document.getElementById('tokenTrialHud');
+                const ring = document.getElementById('trialRing');
+                const text = document.getElementById('trialHudText');
+                const ringContainer = document.getElementById('trialRingContainer');
+                if (hud) {
+                    hud.classList.remove('active', 'burned');
+                    text.textContent = '10s preview...';
+                    ringContainer.style.display = 'block';
+                    ring.style.strokeDashoffset = '0';
+                }
+            }
+            async function startTrialCountdown(videoId) {
+                resetTrialHud();
+                tokenAlreadyBurned = false;
+                const hud = document.getElementById('tokenTrialHud');
+                const ring = document.getElementById('trialRing');
+                const text = document.getElementById('trialHudText');
+                const ringContainer = document.getElementById('trialRingContainer');
+
+                let tokensLabel = '';
+                try {
+                    const tokenRes = await fetch('/api/can_watch');
+                    const tokenData = await tokenRes.json();
+                    if (tokenData.tokens) {
+                        tokensLabel = ` (${tokenData.tokens.remaining}/${tokenData.tokens.max} left)`;
+                    }
+                } catch (e) {
+                    console.error('Could not fetch token count:', e);
+                }
+                
+                const startTime = Date.now();
+                hud.classList.add('active');
+
+                trialInterval = setInterval(() => {
+                    const elapsed = Date.now() - startTime;
+                    const remainingSec = Math.max(0, Math.ceil((TRIAL_DURATION_MS - elapsed) / 1000));
+                    text.textContent = `${remainingSec}s preview...${tokensLabel}`;
+                    
+                    const progress = elapsed / TRIAL_DURATION_MS;
+                    ring.style.strokeDashoffset = `${TRIAL_CIRCUMFERENCE * progress}`;
+                }, 100);
+
+                trialTimer = setTimeout(async () => {
+                    clearInterval(trialInterval);
+                    try {
+                        const res = await fetch('/api/consume_token', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        const data = await res.json();
+                        tokenAlreadyBurned = true;
+                        
+                        hud.classList.add('burned');
+                        ringContainer.style.display = 'none';
+                        if (data.tokens) tokensRemainingCount = data.tokens.remaining;
+                        text.textContent = data.tokens ? `Token burned — ${data.tokens.remaining}/${data.tokens.max} left` : 'Token burned';
+
+                        const tokenCounter = document.getElementById('token-counter');
+                        if (tokenCounter && data.tokens) {
+                            tokenCounter.textContent = `${data.tokens.remaining} / ${data.tokens.max}`;
+                            if (data.tokens.remaining === 0) tokenCounter.classList.add('locked');
+                        }
+
+                        setTimeout(() => {
+                            hud.classList.remove('active');
+                        }, 2500);
+                    } catch (e) {
+                        console.error('Error burning token:', e);
+                    }
+                }, TRIAL_DURATION_MS);
+            }
+
+            async function triggerPlay(videoId) {
+                try {
+                    const res = await fetch('/api/can_watch');
+                    const data = await res.json();
+                    
+                    if (!res.ok || !data.allowed) {
+                        alert(data.message || 'No tokens remaining for today.');
+                        return;
+                    }
+
+                    // Check if target video is downloaded locally
+                    const targetItem = document.getElementById(`item-${videoId}`);
+                    const isLocal = targetItem && (
+                        targetItem.querySelector('.btn-del-local') !== null ||
+                        (targetItem.querySelector('.badge-dl') && targetItem.querySelector('.badge-dl').textContent.includes('Local'))
+                    );
+
+                    if (isLocal) {
+                        const container = document.getElementById('video-player-container');
+                        container.innerHTML = `
+                            <video id="localVideoPlayer" width="854" height="480" controls controlsList="nodownload noplaybackrate nofullscreen" disablePictureInPicture oncontextmenu="return false;" autoplay style="background:#000; outline:none;">
+                                <source src="/downloads/${videoId}.mp4" type="video/mp4">
+                                Your browser does not support HTML5 video.
+                            </video>
+                            <div id="speed-badge" class="speed-badge">1.0x</div>
+                            <button id="video-close-btn">X</button>
+                        `;
+                        document.getElementById('video-close-btn').addEventListener('click', attemptCloseVideo);
+
+                        const localVid = document.getElementById('localVideoPlayer');
+                        lastKnownTime = 0;
+                        lastScrubTimestamp = 0;
+                        clearInterval(trackingInterval);
+                        updateScrubRing();
+
+                        trackingInterval = setInterval(() => {
+                            if (!localVid) return;
+                            const currentTime = localVid.currentTime;
+                            updateScrubRing();
+
+                            if (Math.abs(currentTime - lastKnownTime) > 2.5 && !isSeeking) {
+                                const now = Date.now();
+                                if (now - lastScrubTimestamp < SCRUB_COOLDOWN_MS) {
+                                    isSeeking = true;
+                                    localVid.currentTime = lastKnownTime;
+                                    showScrubWarning();
+                                    setTimeout(() => { isSeeking = false; }, 300);
+                                    return;
+                                } else {
+                                    lastScrubTimestamp = now;
+                                    updateScrubRing();
+                                }
+                            }
+                            lastKnownTime = currentTime;
+                        }, 100);
+
+                        videoOverlay.classList.add('show');
+                        startTrialCountdown(videoId);
+                    } else {
+                        if (!navigator.onLine) {
+                            alert("You are offline. Downloaded videos can still be played from Favorites.");
+                            return;
+                        }
+                        loadYouTubeApi(() => {
+                            createPlayer(videoId);
+                            videoOverlay.classList.add('show');
+                            startTrialCountdown(videoId);
+                        });
+                    }
+                } catch (err) {
+                    console.error('Error starting video:', err);
+                    alert('Error starting video.');
+                }
+            }
+
+            function attemptCloseVideo() {
+                if (tokenAlreadyBurned) {
+                    const countMsg = tokensRemainingCount !== null ? ` (${tokensRemainingCount} tokens left)` : '';
+                    const confirmExit = confirm(`⚠️ Token already burned!${countMsg} Are you sure you want to close this video?`);
+                    if (!confirmExit) return;
+                }
+                closeVideo();
+            }
+
+            function closeVideo() {
+                resetTrialHud();
+                clearInterval(trackingInterval);
+                const localVid = document.getElementById('localVideoPlayer');
+                if (localVid) {
+                    localVid.pause();
+                    localVid.removeAttribute('src');
+                    localVid.load();
+                }
+                if (player) {
+                    if (typeof player.stopVideo === 'function') {
+                        player.stopVideo();
+                    }
+                    player.destroy();
+                    player = null;
+                }
+                const container = document.getElementById('video-player-container');
+                container.innerHTML = '<div id="ytplayer"></div><button id="video-close-btn">X</button>';
+                document.getElementById('video-close-btn').addEventListener('click', typeof attemptCloseVideo === 'function' ? attemptCloseVideo : closeVideoOverlay);
+                videoOverlay.classList.remove('show');
+                tokenAlreadyBurned = false;
+            }
+
+            function updateStorageFooter(storageSize, downloadedCount) {
+                const storageDisplay = document.getElementById('storage-size-display');
+                if (storageDisplay && storageSize !== undefined) {
+                    storageDisplay.textContent = storageSize;
+                }
+                const footer = document.querySelector('.storage-footer');
+                if (footer && downloadedCount !== undefined) {
+                    const span = footer.querySelector('span');
+                    if (span) {
+                        span.innerHTML = `Disk Used: <strong id="storage-size-display">${storageSize}</strong> (${downloadedCount} videos)`;
+                    }
+                }
+            }
+
+            async function handleVideoActionClick(event) {
+                const titleLink = event.target.closest('.video-title-link');
+                const thumbnailContainer = event.target.closest('.thumbnail-container');
+                const hideBtn = event.target.closest('.btn-hide');
+                const favBtn = event.target.closest('.btn-fav');
+                const pinBtn = event.target.closest('.btn-pin');
+                const dlBtn = event.target.closest('.btn-dl');
+                const cnclBtn = event.target.closest('.btn-cncl-dl');
+                const delLocalBtn = event.target.closest('.btn-del-local');
+                const isFavoritesPage = {{ 'true' if is_favorites_page else 'false' }};
+
+                if (delLocalBtn) {
+                    event.stopPropagation();
+                    const videoId = delLocalBtn.dataset.videoid;
+                    if (!confirm("⚠️ Delete this downloaded file from disk?")) return;
+
+                    delLocalBtn.disabled = true;
+                    delLocalBtn.textContent = '...';
+
+                    try {
+                        const res = await fetch('/api/delete_download', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            const actionBtns = delLocalBtn.closest('.action-btns');
+                            const hideBtnRef = actionBtns ? actionBtns.querySelector('.btn-hide') : null;
+                            delLocalBtn.remove();
+
+                            if (actionBtns) {
+                                const newDlBtn = document.createElement('button');
+                                newDlBtn.className = 'btn-action btn-dl';
+                                newDlBtn.dataset.videoid = videoId;
+                                newDlBtn.title = 'Download for offline playback';
+                                newDlBtn.textContent = 'DOWNLOAD';
+                                actionBtns.insertBefore(newDlBtn, hideBtnRef);
+                            }
+
+                            updateStorageFooter(data.storage_size, data.downloaded_count);
+                        } else {
+                            alert(data.message || 'Failed to delete file.');
+                            delLocalBtn.disabled = false;
+                            delLocalBtn.textContent = 'DEL';
+                        }
+                    } catch (e) {
+                        console.error('Delete error:', e);
+                        delLocalBtn.disabled = false;
+                        delLocalBtn.textContent = 'DELETE-LOCAL';
+                    }
+                    return;
+                }
+
+                if (cnclBtn) {
+                    event.stopPropagation();
+                    const videoId = cnclBtn.dataset.videoid;
+                    if (!confirm("Cancel this download in progress?")) return;
+
+                    cnclBtn.disabled = true;
+                    cnclBtn.textContent = '...';
+
+                    try {
+                        const res = await fetch('/api/cancel_download', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            const actionBtns = cnclBtn.closest('.action-btns');
+                            const hideBtnRef = actionBtns ? actionBtns.querySelector('.btn-hide') : null;
+                            cnclBtn.remove();
+
+                            if (actionBtns) {
+                                const newDlBtn = document.createElement('button');
+                                newDlBtn.className = 'btn-action btn-dl';
+                                newDlBtn.dataset.videoid = videoId;
+                                newDlBtn.title = 'Download for offline playback';
+                                newDlBtn.textContent = 'DOWNLOAD';
+                                actionBtns.insertBefore(newDlBtn, hideBtnRef);
+                            }
+                            updateStorageFooter(data.storage_size, data.downloaded_count);
+                        } else {
+                            alert(data.message || 'Failed to CANCEL');
+                            cnclBtn.disabled = false;
+                            cnclBtn.textContent = 'CANCEL-DOWNLOAD';
+                        }
+                    } catch (e) {
+                        console.error('Cancel error:', e);
+                        cnclBtn.disabled = false;
+                        cnclBtn.textContent = 'CANCEL-DOWNLOAD';
+                    }
+                    return;
+                }
+
+                if (dlBtn) {
+                    event.stopPropagation();
+                    const videoId = dlBtn.dataset.videoid;
+                    if (!confirm("Download this video for offline playback?")) return;
+
+                    dlBtn.textContent = 'CANCEL-DOWNLOAD';
+                    dlBtn.className = 'btn-action btn-cncl-dl is-active';
+
+                    try {
+                        await fetch('/api/download_video', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        startDownloadPolling();
+                    } catch (e) {
+                        console.error('Download error:', e);
+                        dlBtn.className = 'btn-action btn-dl';
+                        dlBtn.textContent = 'DOWNLOAD';
+                    }
+                    return;
+                }
+
+                if (pinBtn) {
+                    event.stopPropagation();
+                    const videoId = pinBtn.dataset.videoid;
+                    const isCurrentlyPinned = pinBtn.classList.contains('is-pinned');
+
+                    if (isCurrentlyPinned) {
+                        if (!confirm("Unpin this video from your top slots?")) return;
+                    }
+
+                    try {
+                        const res = await fetch('/api/toggle_pinned', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            window.location.reload();
+                        } else {
+                            alert(data.message || 'Could not pin video.');
+                        }
+                    } catch (err) {
+                        console.error('Pin toggle failed:', err);
+                        alert('Network/server error toggling pin.');
+                    }
+                    return;
+                }
+
+                if (favBtn) {
+                    event.stopPropagation();
+                    const videoId = favBtn.dataset.videoid;
+                    const card = favBtn.closest('.article-item');
+
+                    try {
+                        const res = await fetch('/api/toggle_favorite', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            favBtn.textContent = data.is_favorite ? 'UNFAV' : 'FAV';
+                            favBtn.classList.toggle('is-active', data.is_favorite);
+                            if (card) {
+                                card.classList.toggle('is-favorited', data.is_favorite);
+                            }
+
+                            if (isFavoritesPage && card) {
+                                const thumb = card.querySelector('.thumbnail-container');
+                                let badge = card.querySelector('.pending-removal-badge');
+                                if (!data.is_favorite) {
+                                    card.classList.add('is-pending-removal');
+                                    if (!badge && thumb) {
+                                        badge = document.createElement('div');
+                                        badge.className = 'pending-removal-badge';
+                                        badge.textContent = 'Removed — disappears on refresh';
+                                        thumb.appendChild(badge);
+                                    }
+                                } else {
+                                    card.classList.remove('is-pending-removal');
+                                    if (badge) badge.remove();
+                                }
+                            }
+                        } else {
+                            alert('Toggle fav failed: ' + (data.message || 'Unknown error'));
+                        }
+                    } catch (err) {
+                        console.error('Fav toggle request failed:', err);
+                        alert('Network/server error toggling favorite.');
+                    }
+                    return;
+                }
+
+                if (hideBtn) {
+                    event.stopPropagation();
+                    if (hideBtn.classList.contains('btn-disabled-strike')) return;
+
+                    const videoId = hideBtn.dataset.videoid;
+                    const card = hideBtn.closest('.article-item');
+
+                    try {
+                        const res = await fetch('/api/hide_video', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            hideBtn.textContent = data.is_hidden ? 'UNHIDE' : 'HIDE';
+                            hideBtn.classList.toggle('is-active', data.is_hidden);
+                            hideBtn.classList.toggle('is-hidden-toggle', data.is_hidden);
+                            if (card) {
+                                card.classList.toggle('is-obscured', data.is_hidden);
+                            }
+                        } else {
+                            alert('Error toggling hidden state: ' + (data.message || ''));
+                        }
+                    } catch (err) {
+                        console.error('Hide error:', err);
+                        alert('Could not connect to server to toggle hidden state.');
+                    }
+                    return;
+                }
+
+                if (titleLink) {
+                    event.preventDefault();
+                    triggerPlay(titleLink.dataset.videoid);
+                } else if (thumbnailContainer) {
+                    triggerPlay(thumbnailContainer.dataset.videoid);
+                }
+            }
+            rssContent.addEventListener('click', handleVideoActionClick);
+            if (pinnedContent) pinnedContent.addEventListener('click', handleVideoActionClick);
+
+            // Bulk "clear all downloads" now lives on the /storage page.
+
+            let speedBadgeTimeout = null;
+
+            function showSpeedBadge(rate) {
+                const badge = document.getElementById('speed-badge');
+                if (!badge) return;
+                badge.textContent = `${rate.toFixed(2).replace(/\.?0+$/, '')}x`;
+                badge.classList.add('visible');
+                clearTimeout(speedBadgeTimeout);
+                speedBadgeTimeout = setTimeout(() => {
+                    badge.classList.remove('visible');
+                }, 900);
+            }
+
+            let isTurboActive = false;
+            let preTurboSpeed = 1.0;
+
+            document.addEventListener('keydown', (event) => {
+                if (!videoOverlay.classList.contains('show')) return;
+
+                if (event.key === 'Escape') {
+                    attemptCloseVideo();
+                    return;
+                }
+
+                const localVid = document.getElementById('localVideoPlayer');
+                if (!localVid) return;
+
+                const key = event.key.toLowerCase();
+
+                if (key === 'z') {
+                    if (event.repeat) return; // Prevent OS key repeat spam
+                    event.preventDefault();
+                    isTurboActive = true;
+                    preTurboSpeed = localVid.playbackRate;
+                    localVid.playbackRate = preTurboSpeed * 2;
+                    showSpeedBadge(localVid.playbackRate);
+
+                } else if (key === 'x') {
+                    if (event.repeat) return; // Prevent OS key repeat spam
+                    event.preventDefault();
+                    isTurboActive = true;
+                    preTurboSpeed = localVid.playbackRate;
+                    localVid.playbackRate = preTurboSpeed * 4;
+                    showSpeedBadge(localVid.playbackRate);
+                    
+                } else if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    localVid.playbackRate = Math.min(2.0, parseFloat((localVid.playbackRate + 0.25).toFixed(2)));
+                    showSpeedBadge(localVid.playbackRate);
+                } else if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    localVid.playbackRate = Math.max(0.25, parseFloat((localVid.playbackRate - 0.25).toFixed(2)));
+                    showSpeedBadge(localVid.playbackRate);
+                }
+            });
+
+            document.addEventListener('keyup', (event) => {
+                if (!videoOverlay.classList.contains('show')) return;
+
+                const localVid = document.getElementById('localVideoPlayer');
+                if (!localVid) return;
+
+                if (event.key.toLowerCase() === 'z' && isTurboActive) {
+                    event.preventDefault();
+                    isTurboActive = false;
+                    localVid.playbackRate = preTurboSpeed;
+                    showSpeedBadge(preTurboSpeed);
+                }
+                if (event.key.toLowerCase() === 'x' && isTurboActive) {
+                    event.preventDefault();
+                    isTurboActive = false;
+                    localVid.playbackRate = preTurboSpeed;
+                    showSpeedBadge(preTurboSpeed);
+                }
+            });
+        });
+    </script>
+</body>
+</html>

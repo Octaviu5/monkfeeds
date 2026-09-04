@@ -1,0 +1,32 @@
+# --- Runtime data / local state (regenerated automatically on first run) ---
+focusfeed.db
+session.json
+favorites.json
+pinned.json
+ytdlp_update.json
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+
+# --- Editor/IDE ---
+.vscode/
+.idea/
+*.swp
+
+# --- Downloaded video storage (if it ever ends up inside the repo dir) ---
+downloads/
+*.mp4
+
+
+ffrun.sh
+cleanup-orphans.py

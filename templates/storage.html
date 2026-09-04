@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Storage - Focus Feeder</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='assets/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Storage</h1>
+        <a href="{{ url_for('index') }}" class="back-link">&larr; Back to Main Feed</a>
+
+        <div class="storage-stats">
+            <span>Videos: <strong>{{ total_count }}</strong></span>
+            <span>Disk used: <strong>{{ total_size_formatted }}</strong></span>
+            {% if total_count > 0 %}
+                <button id="deleteAllBtn" class="btn-action btn-hide" title="Delete every downloaded video">Delete All</button>
+            {% endif %}
+        </div>
+
+        <div id="storageContent">
+            {% if entries %}
+                {% for entry in entries %}
+                    <div class="feed-item storage-item" id="storage-{{ entry.video_id }}">
+                        <div class="storage-item-thumb">
+                            {% if entry.thumbnail_url %}
+                                <img src="{{ entry.thumbnail_url }}" alt="" loading="lazy" onerror="this.onerror=null;this.src='{{ url_for('static', filename='assets/no-thumbnail.png') }}';">
+                            {% else %}
+                                <div class="storage-thumb-placeholder">?</div>
+                            {% endif %}
+                        </div>
+                        <span class="storage-item-info">
+                            {% if entry.is_orphaned %}
+                                <strong style="color: var(--accent-danger);">Deleted from database</strong>
+                                <br><small>{{ entry.video_id }}</small>
+                            {% else %}
+                                <strong style="color: var(--text-primary);">{{ entry.title }}</strong>
+                                <br><small>{{ entry.channel_name or '' }}</small>
+                            {% endif %}
+                        </span>
+                        <span class="storage-item-size">{{ entry.size_formatted }}</span>
+                        <button class="btn-action btn-del-local" data-videoid="{{ entry.video_id }}" title="Delete this file from disk">Delete</button>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <p class="empty-message">No downloaded videos.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const storageContent = document.getElementById('storageContent');
+            const deleteAllBtn = document.getElementById('deleteAllBtn');
+
+            if (storageContent) {
+                storageContent.addEventListener('click', async (event) => {
+                    const delBtn = event.target.closest('.btn-del-local');
+                    if (!delBtn) return;
+
+                    const videoId = delBtn.dataset.videoid;
+                    if (!confirm("⚠️ Permanently delete this downloaded file from disk?")) return;
+
+                    delBtn.disabled = true;
+                    delBtn.textContent = '...';
+
+                    try {
+                        const res = await fetch('/api/delete_download', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_id: videoId })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            window.location.reload();
+                        } else {
+                            alert(data.message || 'Failed to delete file.');
+                            delBtn.disabled = false;
+                            delBtn.textContent = 'Delete';
+                        }
+                    } catch (e) {
+                        console.error('Delete error:', e);
+                        delBtn.disabled = false;
+                        delBtn.textContent = 'Delete';
+                    }
+                });
+            }
+
+            if (deleteAllBtn) {
+                deleteAllBtn.addEventListener('click', async () => {
+                    if (!confirm("⚠️ Permanently delete ALL downloaded videos from disk? This cannot be undone.")) return;
+
+                    deleteAllBtn.disabled = true;
+                    deleteAllBtn.textContent = 'Deleting...';
+
+                    try {
+                        const res = await fetch('/api/clear_downloads', { method: 'POST' });
+                        const data = await res.json();
+                        if (data.success) {
+                            window.location.reload();
+                        } else {
+                            alert('Error clearing downloads.');
+                            deleteAllBtn.disabled = false;
+                            deleteAllBtn.textContent = 'Delete All';
+                        }
+                    } catch (e) {
+                        console.error('Clear downloads error:', e);
+                        deleteAllBtn.disabled = false;
+                        deleteAllBtn.textContent = 'Delete All';
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html>

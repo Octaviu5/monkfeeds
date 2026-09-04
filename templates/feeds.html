@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Feeds - Focus Feeder</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='assets/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Manage Feeds</h1>
+        <a href="{{ url_for('index') }}" class="back-link">&larr; Back to Main Feed</a>
+
+        <h2>Current Feeds</h2>
+        <div class="feed-list">
+            {% if channels %}
+                {% for channel in channels %}
+                    <div class="feed-item" id="channel-{{ channel.channel_id }}">
+                        <span>
+                            {% if is_weekend %}
+                                <a href="{{ url_for('channel_view', channel_id=channel.channel_id) }}">{{ channel.name }}</a>
+                            {% else %}
+                                <strong style="color: var(--text-primary);">{{ channel.name }}</strong>
+                            {% endif %}
+                            <br>
+                            <small>{{ channel.feed_url }}</small>
+                        </span>
+                        <button class="delete-feed-btn" data-channelid="{{ channel.channel_id }}">Delete</button>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <p>No feeds added yet. Use the form below to add your first feed!</p>
+            {% endif %}
+        </div>
+
+        <h2>Add New Feed</h2>
+        <div class="add-feed-form">
+            <div id="add-feed-message" class="message" style="display: none;"></div>
+            <label for="feedName">Channel Name (optional — auto-filled from the URL if left blank):</label>
+            <input type="text" id="feedName" placeholder="Leave blank to auto-detect">
+
+            <label for="feedUrl">YouTube Channel URL, @handle, or RSS Feed URL:</label>
+            <input type="text" id="feedUrl" placeholder="e.g., @SmarterEveryday, youtube.com/channel/UC..., or a raw RSS feed URL" required>
+
+            <label for="contentType">Content Type:</label>
+            <select id="contentType">
+                <option value="videos" selected>Videos only</option>
+                <option value="shorts">Shorts only</option>
+                <option value="both">Both (adds two entries)</option>
+            </select>
+
+            <button id="addFeedBtn">Add Channel</button>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const addFeedBtn = document.getElementById('addFeedBtn');
+            const feedNameInput = document.getElementById('feedName');
+            const feedUrlInput = document.getElementById('feedUrl');
+            const contentTypeSelect = document.getElementById('contentType');
+            const addFeedMessage = document.getElementById('add-feed-message');
+            const feedList = document.querySelector('.feed-list');
+
+            feedUrlInput.addEventListener('blur', async () => {
+                const url = feedUrlInput.value.trim();
+                if (!url || feedNameInput.value.trim()) return; // don't overwrite a manually-typed name
+
+                feedNameInput.placeholder = 'Resolving…';
+                try {
+                    const res = await fetch('/api/resolve_channel', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url }),
+                    });
+                    const data = await res.json();
+                    if (data.success && data.channel_name) {
+                        feedNameInput.value = data.channel_name;
+                    }
+                } catch (error) {
+                    console.error('Resolve error:', error);
+                } finally {
+                    feedNameInput.placeholder = 'Leave blank to auto-detect';
+                }
+            });
+
+            addFeedBtn.addEventListener('click', async () => {
+                const name = feedNameInput.value.trim();
+                const feed_url = feedUrlInput.value.trim();
+                const content_type = contentTypeSelect.value;
+
+                if (!feed_url) {
+                    displayMessage('Please provide a channel URL or feed URL.', 'error');
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/add_channel', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ name, feed_url, content_type }),
+                    });
+                    const data = await response.json();
+
+                    if (data.success) {
+                        displayMessage(data.message, 'success');
+                        feedNameInput.value = '';
+                        feedUrlInput.value = '';
+                        // Reload the page to show the new channel or fetch the list dynamically
+                        setTimeout(() => window.location.reload(), 1500);
+                    } else {
+                        displayMessage(data.message, 'error');
+                    }
+                } catch (error) {
+                    console.error('Fetch error:', error);
+                    displayMessage('Could not connect to server to add channel.', 'error');
+                }
+            });
+
+            feedList.addEventListener('click', async (event) => {
+                const deleteButton = event.target.closest('.delete-feed-btn');
+                if (deleteButton) {
+                    const channelIdToDelete = deleteButton.dataset.channelid;
+                    const feedItem = deleteButton.closest('.feed-item');
+                    const nameEl = feedItem.querySelector('a') || feedItem.querySelector('strong') || feedItem.querySelector('span');
+                    const channelName = nameEl ? nameEl.childNodes[0].textContent.trim() : 'this channel';
+                    if (confirm(`Are you sure you want to delete "${channelName}" and all its videos?`)) {
+                        try {
+                            const response = await fetch('/api/delete_channel', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({ channel_id: channelIdToDelete }),
+                            });
+                            const data = await response.json();
+
+                            if (data.success) {
+                                displayMessage(data.message, 'success');
+                                document.getElementById(`channel-${channelIdToDelete}`).remove();
+                            } else {
+                                displayMessage(data.message, 'error');
+                            }
+                        } catch (error) {
+                            console.error('Fetch error:', error);
+                            displayMessage('Could not connect to server to delete channel.', 'error');
+                        }
+                    }
+                }
+            });
+
+            function displayMessage(message, type) {
+                addFeedMessage.textContent = message;
+                addFeedMessage.className = `message ${type}`;
+                addFeedMessage.style.display = 'block';
+                setTimeout(() => {
+                    addFeedMessage.style.display = 'none';
+                }, 5000);
+            }
+        });
+    </script>
+</body>
+</html>
